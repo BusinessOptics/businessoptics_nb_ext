@@ -12,9 +12,7 @@ from notebook.services.contents.filemanager import FileContentsManager
 class GitContentsManager(FileContentsManager):
     def get(self, path, content=True, type=None, format=None):
         try:
-            if (path.endswith('.ipynb')
-                or path.endswith('.flat.py')
-                or type == 'notebook'):
+            if self._path_is_notebook(path) or type == 'notebook':
                 src_path = self._get_subpaths(path, True)[1]
                 if os.path.exists(src_path):
                     return self._load_flat_notebook(path, content)
@@ -129,14 +127,20 @@ class GitContentsManager(FileContentsManager):
 
         return '\n'.join(buf)
 
+    def _path_is_notebook(self, path):
+        return path.endswith('.ipynb') or path.endswith('_flat.py')
+
     def _get_subpaths(self, os_path, strip):
         if strip:
             os_path = os_path.strip("/")
 
         folder, base = os.path.split(os_path)
-        name = base.partition('.')[0]
+        if base.endswith("_flat.py"):
+            name = base[:-len("_flat.py")]
+        else:
+            name = base.partition('.')[0]
 
-        source_path = os.path.join(folder, name + ".flat.py")
+        source_path = os.path.join(folder, name + "_flat.py")
         ipynb_path = os.path.join(folder, name + ".ipynb")
         output_path = os.path.join(folder, "." + name + ".ipynboutput")
 
@@ -155,3 +159,42 @@ class GitContentsManager(FileContentsManager):
 
         with open(output_path, 'w', encoding='utf-8') as f:
             nbformat.write(nb, f, version=nbformat.NO_CONVERT)
+
+    def rename_file(self, old_path, new_path):
+        """Rename a file."""
+
+        # Treat everything else as usual
+        if not self._path_is_notebook(old_path):
+            super(GitContentsManager, self).rename_file(old_path, new_path)
+            return
+
+        # Call super class' rename function on each component
+        old_paths = self._get_subpaths(old_path, False)
+        new_paths = self._get_subpaths(new_path, False)
+        pairs = zip(old_paths, new_paths)
+        for old_component_path, new_component_path in pairs:
+            old_component_os_path = self._get_os_path(old_component_path)
+            if os.path.exists(old_component_os_path):
+                super(GitContentsManager, self).rename_file(old_component_path, new_component_path)
+
+    def delete_file(self, path):
+        """Delete a file."""
+        # Treat everything else as usual
+        if not self._path_is_notebook(path):
+            super(GitContentsManager, self).delete_file(path)
+            return
+
+        components = self._get_subpaths(path, False)
+
+        # Try delete all the paths and store first exception
+        exception = None
+        for component in components:
+            try:
+                super(GitContentsManager, self).delete_file(component)
+            except Exception as e:
+                if not exception:
+                    exception = e
+
+        # Check deletion was a success
+        if any(self.file_exists(component) for component in components) and exception:
+            raise exception
